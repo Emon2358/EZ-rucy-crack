@@ -2,6 +2,23 @@ name: Test Twitter Keys
 
 on:
   workflow_dispatch:
+    inputs:
+      CONSUMER_KEY:
+        description: 'Twitter Consumer Key'
+        required: true
+        type: string
+      CONSUMER_KEY_SECRET:
+        description: 'Twitter Consumer Key Secret'
+        required: true
+        type: string
+      ACCESS_TOKEN:
+        description: 'Twitter Access Token'
+        required: true
+        type: string
+      ACCESS_TOKEN_SECRET:
+        description: 'Twitter Access Token Secret'
+        required: true
+        type: string
 
 jobs:
   test-keys:
@@ -20,40 +37,44 @@ jobs:
         run: |
           pip install tweepy
 
-      - name: Verify Twitter API keys availability
+      - name: Verify Twitter API keys and reverse lookup API key owner
         env:
-          CONSUMER_KEY: ${{ secrets.CONSUMER_KEY }}
-          CONSUMER_KEY_SECRET: ${{ secrets.CONSUMER_KEY_SECRET }}
+          CONSUMER_KEY: ${{ github.event.inputs.CONSUMER_KEY }}
+          CONSUMER_KEY_SECRET: ${{ github.event.inputs.CONSUMER_KEY_SECRET }}
+          ACCESS_TOKEN: ${{ github.event.inputs.ACCESS_TOKEN }}
+          ACCESS_TOKEN_SECRET: ${{ github.event.inputs.ACCESS_TOKEN_SECRET }}
         run: |
-          python -c "import os; \
-          key = os.environ.get('CONSUMER_KEY'); \
-          secret = os.environ.get('CONSUMER_KEY_SECRET'); \
-          assert key, 'CONSUMER_KEY is not set in the environment.'; \
-          assert secret, 'CONSUMER_KEY_SECRET is not set in the environment.'; \
-          print('Both CONSUMER_KEY and CONSUMER_KEY_SECRET are available!')"
+          python - <<'EOF'
+          import os
+          import json
+          import tweepy
 
-      - name: Reverse lookup API key owner
-        env:
-          CONSUMER_KEY: ${{ secrets.CONSUMER_KEY }}
-          CONSUMER_KEY_SECRET: ${{ secrets.CONSUMER_KEY_SECRET }}
-          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
-          ACCESS_TOKEN_SECRET: ${{ secrets.ACCESS_TOKEN_SECRET }}
-        run: |
-          python -c "import tweepy, os, json; \
-          consumer_key = os.environ.get('CONSUMER_KEY'); \
-          consumer_secret = os.environ.get('CONSUMER_KEY_SECRET'); \
-          access_token = os.environ.get('ACCESS_TOKEN'); \
-          access_token_secret = os.environ.get('ACCESS_TOKEN_SECRET'); \
-          assert consumer_key, 'CONSUMER_KEY is missing'; \
-          assert consumer_secret, 'CONSUMER_KEY_SECRET is missing'; \
-          assert access_token, 'ACCESS_TOKEN is missing'; \
-          assert access_token_secret, 'ACCESS_TOKEN_SECRET is missing'; \
-          auth = tweepy.OAuthHandler(consumer_key, consumer_secret); \
-          auth.set_access_token(access_token, access_token_secret); \
-          api = tweepy.API(auth, wait_on_rate_limit=True); \
-          user = api.verify_credentials(); \
-          if user: \
-              print('API key owner info:'); \
-              print(json.dumps(user._json, indent=2)); \
-          else: \
-              print('Failed to verify credentials.')"
+          consumer_key = os.environ.get('CONSUMER_KEY')
+          consumer_secret = os.environ.get('CONSUMER_KEY_SECRET')
+          access_token = os.environ.get('ACCESS_TOKEN')
+          access_token_secret = os.environ.get('ACCESS_TOKEN_SECRET')
+
+          # Verify that all required keys are available.
+          assert consumer_key, 'CONSUMER_KEY is missing'
+          assert consumer_secret, 'CONSUMER_KEY_SECRET is missing'
+          assert access_token, 'ACCESS_TOKEN is missing'
+          assert access_token_secret, 'ACCESS_TOKEN_SECRET is missing'
+          print("All Twitter API credentials received successfully.\n")
+
+          try:
+              # Set up OAuth and create the API object.
+              auth = tweepy.OAuthHandler(consumer_key, consumer_secret)
+              auth.set_access_token(access_token, access_token_secret)
+              api = tweepy.API(auth, wait_on_rate_limit=True)
+
+              # Verify the credentials and get user info.
+              user = api.verify_credentials()
+              if user:
+                  print("API key owner info:")
+                  print(json.dumps(user._json, indent=2))
+              else:
+                  print("Failed to verify credentials.")
+          except Exception as e:
+              print("An error occurred while verifying credentials:")
+              print(e)
+          EOF
