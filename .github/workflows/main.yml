@@ -1,64 +1,38 @@
-name: Test Twitter Keys (App-Only)
+# .github/workflows/inspect-key.yml
+
+name: Inspect PGP Public Key 🔑
 
 on:
+  # mainブランチへのプッシュ時（変更なし）
+  push:
+    branches: [ main ]
+  # 手動実行の定義を強化
   workflow_dispatch:
+    # ここで手動実行時の入力フォームを定義します
     inputs:
-      CONSUMER_KEY:
-        description: 'Twitter Consumer Key'
+      key_path:
+        description: 'リポジトリ内のPGP公開鍵ファイルのパス'
         required: true
-        type: string
-      CONSUMER_KEY_SECRET:
-        description: 'Twitter Consumer Key Secret'
-        required: true
+        default: 'public-key.asc'
         type: string
 
 jobs:
-  test-keys:
+  inspect:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.x"
-
-      - name: Install dependencies
+      - name: Inspect PGP Key File
         run: |
-          pip install tweepy
+          # 手動実行時に入力された値を変数にセットします
+          KEY_FILE="${{ inputs.key_path }}"
 
-      - name: Verify Twitter API keys using App-Only authentication
-        env:
-          CONSUMER_KEY: ${{ github.event.inputs.CONSUMER_KEY }}
-          CONSUMER_KEY_SECRET: ${{ github.event.inputs.CONSUMER_KEY_SECRET }}
-        run: |
-          python - <<'EOF'
-          import os
-          import json
-          import tweepy
+          if [ ! -f "$KEY_FILE" ]; then
+            echo "Error: Key file not found at '$KEY_FILE'"
+            exit 1
+          fi
 
-          consumer_key = os.environ.get('CONSUMER_KEY')
-          consumer_secret = os.environ.get('CONSUMER_KEY_SECRET')
-
-          # Verify that both keys are provided.
-          assert consumer_key, "CONSUMER_KEY is missing"
-          assert consumer_secret, "CONSUMER_KEY_SECRET is missing"
-          print("Received both CONSUMER_KEY and CONSUMER_KEY_SECRET.\n")
-
-          try:
-              # Use App-Only authentication.
-              auth = tweepy.AppAuthHandler(consumer_key, consumer_secret)
-              api = tweepy.API(auth, wait_on_rate_limit=True)
-
-              # As verify_credentials() is not supported in app-only auth,
-              # check keys validity via fetching the rate limit status.
-              rate_limit_status = api.rate_limit_status()
-              print("Keys are valid. Here is the rate limit status:")
-              print(json.dumps(rate_limit_status, indent=2))
-          
-          except Exception as e:
-              print("Error occurred while validating keys:")
-              print(e)
-          EOF
+          echo "✅ Inspecting key file: $KEY_FILE"
+          echo "------------------------------------"
+          gpg --show-keys "$KEY_FILE"
