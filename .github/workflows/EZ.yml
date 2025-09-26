@@ -1,181 +1,65 @@
 # ワークフローの名前
-name: 手動ドメイン詳細チェック (強化版)
+name: Gmailアドレス漏洩チェック
 
 # ワークフローのトリガー設定
 on:
   workflow_dispatch:
     inputs:
-      domain:
-        description: 'チェックしたいドメイン名 (例: example.com)'
+      email:
+        description: 'チェックしたいGmailアドレス'
         required: true
         type: string
 
 # ワークフローが実行するジョブを定義
 jobs:
-  advanced-domain-checker:
+  breach-checker:
     runs-on: ubuntu-latest
     steps:
-      # ステップ1: 必要なツールをインストールする
-      - name: 必要なツールをインストール
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y dnsutils whois netcat-openbsd openssl curl
+      # ステップ1: 必要なツールをインストール
+      - name: 必要なツールをインストール (curl, jq)
+        run: sudo apt-get update && sudo apt-get install -y curl jq
 
-      # ステップ2: ドメインの基本チェックを実行
-      - name: ドメイン基本チェック & DNSレコード分析
-        id: basic_check
+      # ステップ2: Gmailアドレスのチェックを実行
+      - name: 漏洩チェックの実行
         run: |
-          DOMAIN="${{ github.event.inputs.domain }}"
+          EMAIL="${{ github.event.inputs.email }}"
+          
           echo "=================================================="
-          echo "ドメイン基本チェック & DNSレコード分析: $DOMAIN"
+          echo "Gmailアドレス漏洩チェックを開始します: $EMAIL"
           echo "=================================================="
           
           # --- 構文チェック ---
           echo -e "\n--- 1. 構文チェック ---"
-          if [[ ! "$DOMAIN" =~ ^([a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]\.)+[a-zA-Z]{2,}$ ]]; then
-            echo "❌ 一般ドメイン構文: NG - 不正な形式です。"
+          if [[ "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@gmail\.com$ ]]; then
+            echo "✅ Gmailアドレスの形式: OK"
+          else
+            echo "❌ Gmailアドレスの形式: NG - 正しいGmailアドレスではありません。"
             exit 1
           fi
-          echo "✅ 一般ドメイン構文: OK"
+
+          # --- Have I Been Pwned? APIによる漏洩チェック ---
+          echo -e "\n--- 2. データ漏洩履歴のチェック (Have I Been Pwned?) ---"
+          # HIBP APIにリクエストを送信し、HTTPステータスコードを取得
+          # APIは見つかれば200、見つからなければ404を返す
+          API_URL="https://haveibeenpwned.com/api/v3/breachedaccount/${EMAIL}"
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "hibp-api-key: YOUR_API_KEY_HERE" "$API_URL")
+
+          if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "❌ 警告: このメールアドレスは過去のデータ漏洩で発見されました！"
+            echo "漏洩したサービスと情報の詳細は以下の通りです:"
+            
+            # ステータスが200の場合、再度APIを叩いてJSONレスポンスを取得し、jqで整形して表示
+            RESPONSE_JSON=$(curl -s -H "hibp-api-key: YOUR_API_KEY_HERE" "$API_URL")
+            echo "$RESPONSE_JSON" | jq -r '.[] | "  - サービス名: \(.Name)\n    漏洩日: \(.BreachDate)\n    漏洩データ: \(.DataClasses | join(", "))\n"'
+            
+          elif [ "$HTTP_STATUS" -eq 404 ]; then
+            echo "✅ 安全: このメールアドレスは既知のデータ漏洩では発見されませんでした。"
+          else
+            echo "⚠️ 不明: チェック中にエラーが発生しました。 (HTTPステータス: $HTTP_STATUS)"
+            echo "APIキーが設定されていないか、HIBPサービスが一時的に利用できない可能性があります。"
+          fi
           
-          # --- A, MX, SPF, DMARC, CAA, DNSSEC レコード ---
-          echo -e "\n--- 2. 主要DNSレコード ---"
-          RECORDS_TO_CHECK="A MX TXT NS CAA"
-          for record in $RECORDS_TO_CHECK; do
-            echo "--- Checking $record records ---"
-            RESULT=$(dig +short $record $DOMAIN)
-            if [ -n "$RESULT" ]; then
-              echo "✅ $record レコード: あり"
-              echo "$RESULT"
-            else
-              echo "❌ $record レコード: 見つかりませんでした。"
-            fi
-          done
-
-          echo "--- Checking DMARC record ---"
-          DMARC_RESULT=$(dig +short TXT "_dmarc.$DOMAIN")
-          if [ -n "$DMARC_RESULT" ]; then
-            echo "✅ DMARC レコード: あり"
-            echo "$DMARC_RESULT"
-          else
-            echo "❌ DMARC レコード: 見つかりませんでした。"
-          fi
-
-          echo "--- Checking DNSSEC ---"
-          # +dnssec オプションでDNSKEYレコードを問い合わせ、署名があれば有効と判断
-          DNSSEC_RESULT=$(dig +dnssec DNSKEY $DOMAIN | grep RRSIG)
-          if [ -n "$DNSSEC_RESULT" ]; then
-            echo "✅ DNSSEC: 有効の可能性があります (RRSIGレコードが見つかりました)"
-          else
-            echo "⚠️ DNSSEC: 無効、または確認できませんでした。"
-          fi
-
-          # --- WHOIS情報 ---
-          echo -e "\n--- 3. WHOIS情報 ---"
-          whois $DOMAIN
-
-          # IPアドレスとMXサーバー情報を後続のステップに渡す
-          PRIMARY_IP=$(dig +short A $DOMAIN | head -n 1)
-          PRIMARY_MX=$(dig +short MX $DOMAIN | sort -n | head -n 1 | awk '{print $2}')
-          echo "primary_ip=$PRIMARY_IP" >> $GITHUB_OUTPUT
-          echo "primary_mx=$PRIMARY_MX" >> $GITHUB_OUTPUT
-
-      # ステップ3: メールサーバーのセキュリティ診断
-      - name: メールサーバーセキュリティ診断
-        if: steps.basic_check.outputs.primary_mx != ''
-        run: |
-          DOMAIN="${{ github.event.inputs.domain }}"
-          PRIMARY_MX=${{ steps.basic_check.outputs.primary_mx }}
-          echo -e "\n=================================================="
-          echo "メールサーバーセキュリティ診断: $PRIMARY_MX"
-          echo "=================================================="
-
-          # --- STARTTLS対応チェック ---
-          echo -e "\n--- 4. STARTTLS対応 ---"
-          # opensslでSMTPサーバーに接続し、STARTTLSを試みる
-          if echo "QUIT" | openssl s_client -connect $PRIMARY_MX:25 -starttls smtp -quiet 2>/dev/null; then
-             echo "✅ STARTTLS: 対応しています (暗号化通信が可能です)"
-          else
-             echo "⚠️ STARTTLS: 非対応、または接続に失敗しました。"
-          fi
-
-          # --- EHLOによるサーバー情報取得 ---
-          echo -e "\n--- 5. SMTPサーバー情報 (EHLO) ---"
-          # 5秒タイムアウトでEHLOコマンドを送信し、サーバーの応答を取得
-          EHLO_RESPONSE=$( (sleep 1; echo "EHLO $DOMAIN"; sleep 1; echo "QUIT") | nc -w 5 $PRIMARY_MX 25 )
-          if [ -n "$EHLO_RESPONSE" ]; then
-            echo "ℹ️ サーバーからの応答:"
-            echo "$EHLO_RESPONSE"
-          else
-            echo "❌ サーバーからの応答がありませんでした。"
-          fi
-      
-      # ステップ4: Webサーバーのセキュリティ診断
-      - name: Webサーバーセキュリティ診断
-        if: steps.basic_check.outputs.primary_ip != ''
-        run: |
-          DOMAIN="${{ github.event.inputs.domain }}"
-          echo -e "\n=================================================="
-          echo "Webサーバーセキュリティ診断: https://$DOMAIN"
-          echo "=================================================="
-
-          # --- SSL/TLS証明書詳細 ---
-          echo -e "\n--- 6. SSL/TLS証明書詳細 ---"
-          # opensslで証明書情報を取得し、主要な項目を抜粋して表示
-          CERT_INFO=$(echo "QUIT" | openssl s_client -connect $DOMAIN:443 -servername $DOMAIN 2>/dev/null | openssl x509 -noout -text | grep -E "Issuer:|Subject:|Not Before|Not After|DNS:")
-          if [ -n "$CERT_INFO" ]; then
-            echo "✅ SSL証明書: 取得成功"
-            echo "$CERT_INFO"
-          else
-            echo "❌ SSL証明書: 取得に失敗しました。HTTPS(443)で応答がない可能性があります。"
-          fi
-
-          # --- HTTPセキュリティヘッダ ---
-          echo -e "\n--- 7. HTTPセキュリティヘッダ ---"
-          # curlでヘッダ情報を取得
-          HEADERS=$(curl -sIL https://$DOMAIN)
-          SECURITY_HEADERS=(
-            "Strict-Transport-Security"
-            "Content-Security-Policy"
-            "X-Frame-Options"
-            "X-Content-Type-Options"
-            "Referrer-Policy"
-            "Permissions-Policy"
-          )
-          echo "ℹ️ HTTPレスポンスヘッダ:"
-          echo "$HEADERS"
-          echo -e "\nℹ️ 主要セキュリティヘッダの存在チェック:"
-          for header in "${SECURITY_HEADERS[@]}"; do
-            if echo "$HEADERS" | grep -iq "$header:"; then
-              echo "✅ $header: あり"
-            else
-              echo "⚠️ $header: なし"
-            fi
-          done
-
-      # ステップ5: IPレピュテーションチェック
-      - name: IPレピュテーションチェック
-        if: steps.basic_check.outputs.primary_ip != ''
-        run: |
-          PRIMARY_IP=${{ steps.basic_check.outputs.primary_ip }}
-          echo -e "\n=================================================="
-          echo "IPレピュテーションチェック: $PRIMARY_IP"
-          echo "=================================================="
-
-          # --- IPジオロケーション ---
-          echo -e "\n--- 8. IPジオロケーション ---"
-          curl -s ipinfo.io/$PRIMARY_IP
-
-          # --- DNSブラックリスト (Spamhaus) ---
-          echo -e "\n--- 9. DNSブラックリスト (Spamhaus SBL) ---"
-          # IPアドレスを逆順に並び替える
-          REVERSED_IP=$(echo $PRIMARY_IP | awk -F. '{print $4"."$3"."$2"."$1}')
-          BLACKLIST_DOMAIN="zen.spamhaus.org"
-          # ブラックリストに問い合わせ
-          BLACKLIST_RESULT=$(dig +short A $REVERSED_IP.$BLACKLIST_DOMAIN)
-          if [ -n "$BLACKLIST_RESULT" ]; then
-            echo "❌ ブラックリスト登録: 警告！Spamhausに登録されています。"
-            echo "応答コード: $BLACKLIST_RESULT (詳細はSpamhausのサイトで確認してください)"
-          else
-            echo "✅ ブラックリスト登録: なし (Spamhausではクリーンです)"
-          fi
+          echo -e "\nチェック完了"
+          
+          # HIBP APIキーについての注意喚起
+          echo -e "\n【注意】\nこのスクリプトはHave I Been Pwned?のAPI v3を使用しています。\nAPIを頻繁に利用する場合は、公式サイト (https://haveibeenpwned.com/API/Key) でAPIキーを取得し、\nワークフローファイルの 'YOUR_API_KEY_HERE' の部分を置き換えるか、GitHubのSecretsにキーを設定してください。"
